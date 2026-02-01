@@ -4,9 +4,9 @@ mod messages;
 #[cfg(test)]
 mod test;
 
-use std::fmt::Debug;
+use std::fmt::{Debug, Write};
 use std::io;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, WriteBytesExt};
@@ -43,6 +43,72 @@ const SIGNATURE_VERSION_SIZE: usize = 4;
 const SIGNATURE_SEQ_NUM_SIZE: usize = 4;
 const SIGNATURE_CHECKSUM_SIZE: usize = 8;
 const MESSAGES_VERSION: u32 = 1;
+
+pub static GLOBAL_AV_PAIRS: Mutex<Vec<AvPair>> = Mutex::new(Vec::new());
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AvId {
+    Eol,
+    NbComputerName,
+    NbDomainName,
+    DnsComputerName,
+    DnsDomainName,
+    DnsTreeName,
+    Timestamp,
+    Flags,
+    Unknown(u16),
+}
+
+impl From<u16> for AvId {
+    fn from(v: u16) -> Self {
+        match v {
+            0 => AvId::Eol,
+            1 => AvId::NbComputerName,
+            2 => AvId::NbDomainName,
+            3 => AvId::DnsComputerName,
+            4 => AvId::DnsDomainName,
+            5 => AvId::DnsTreeName,
+            6 => AvId::Flags,
+            7 => AvId::Timestamp,
+            x => AvId::Unknown(x),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum AvValue {
+    Utf16(String),
+    Timestamp(u64),
+    Flags(u32),
+    Raw(Vec<u8>),
+}
+
+impl ToString for AvValue {
+    fn to_string(&self) -> String {
+        match self {
+            AvValue::Utf16(s) => s.clone(),
+            AvValue::Timestamp(t) => t.to_string(),
+            AvValue::Flags(f) => format!("0x{:08x}", f),
+            AvValue::Raw(b) => {
+                if b.is_empty() {
+                    return String::new();
+                }
+
+                let mut s = String::from("0x");
+                for &byte in b {
+                    write!(&mut s, "{:02x}", byte).unwrap();
+                }
+                s
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AvPair {
+    pub id: AvId,
+    pub value: AvValue,
+}
 
 pub static PACKAGE_INFO: LazyLock<PackageInfo> = LazyLock::new(|| PackageInfo {
     capabilities: PackageCapabilities::empty(),
