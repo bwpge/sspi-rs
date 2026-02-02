@@ -4,9 +4,9 @@ mod messages;
 #[cfg(test)]
 mod test;
 
-use std::fmt::{Debug, Write};
-use std::io;
+use std::fmt::{self, Debug};
 use std::sync::{LazyLock, Mutex};
+use std::{io, slice};
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, WriteBytesExt};
@@ -44,6 +44,8 @@ const SIGNATURE_SEQ_NUM_SIZE: usize = 4;
 const SIGNATURE_CHECKSUM_SIZE: usize = 8;
 const MESSAGES_VERSION: u32 = 1;
 
+// begin: AV_PAIR stuff
+
 pub static GLOBAL_AV_PAIRS: Mutex<Vec<AvPair>> = Mutex::new(Vec::new());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,21 +58,42 @@ pub enum AvId {
     DnsTreeName,
     Timestamp,
     Flags,
+    TargetName,
     Unknown(u16),
 }
 
 impl From<u16> for AvId {
+    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/83f5e789-660d-4781-8491-5f8c6641f75e
     fn from(v: u16) -> Self {
         match v {
-            0 => AvId::Eol,
-            1 => AvId::NbComputerName,
-            2 => AvId::NbDomainName,
-            3 => AvId::DnsComputerName,
-            4 => AvId::DnsDomainName,
-            5 => AvId::DnsTreeName,
-            6 => AvId::Flags,
-            7 => AvId::Timestamp,
+            0x0 => AvId::Eol,
+            0x1 => AvId::NbComputerName,
+            0x2 => AvId::NbDomainName,
+            0x3 => AvId::DnsComputerName,
+            0x4 => AvId::DnsDomainName,
+            0x5 => AvId::DnsTreeName,
+            0x6 => AvId::Flags,
+            0x7 => AvId::Timestamp,
+            // 0x8 SingleHost
+            0x9 => AvId::TargetName,
             x => AvId::Unknown(x),
+        }
+    }
+}
+
+impl fmt::Display for AvId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AvId::Eol => write!(f, "Eol"),
+            AvId::NbComputerName => write!(f, "NbComputerName"),
+            AvId::NbDomainName => write!(f, "NbDomainName"),
+            AvId::DnsComputerName => write!(f, "DnsComputerName"),
+            AvId::DnsDomainName => write!(f, "DnsDomainName"),
+            AvId::DnsTreeName => write!(f, "DnsTreeName"),
+            AvId::Timestamp => write!(f, "Timestamp"),
+            AvId::Flags => write!(f, "Flags"),
+            AvId::TargetName => write!(f, "TargetName"),
+            AvId::Unknown(b) => write!(f, "Unknown(0x{b:x})"),
         }
     }
 }
@@ -83,22 +106,22 @@ pub enum AvValue {
     Raw(Vec<u8>),
 }
 
-impl ToString for AvValue {
-    fn to_string(&self) -> String {
+impl fmt::Display for AvValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AvValue::Utf16(s) => s.clone(),
-            AvValue::Timestamp(t) => t.to_string(),
-            AvValue::Flags(f) => format!("0x{:08x}", f),
+            AvValue::Utf16(s) => f.write_str(&s),
+            AvValue::Timestamp(t) => write!(f, "{t}"),
+            AvValue::Flags(fl) => write!(f, "0x{fl:08x}"),
             AvValue::Raw(b) => {
                 if b.is_empty() {
-                    return String::new();
+                    return Ok(());
                 }
 
-                let mut s = String::from("0x");
+                f.write_str("0x")?;
                 for &byte in b {
-                    write!(&mut s, "{:02x}", byte).unwrap();
+                    write!(f, "{byte:02x}")?;
                 }
-                s
+                Ok(())
             }
         }
     }
@@ -109,6 +132,65 @@ pub struct AvPair {
     pub id: AvId,
     pub value: AvValue,
 }
+
+fn parse_av_pairs(buf: &[u8]) -> Vec<AvPair> {
+    let mut out = Vec::new();
+    let mut offset = 0;
+
+    while offset + 4 <= buf.len() {
+        let av_id = u16::from_le_bytes([buf[offset], buf[offset + 1]]);
+        let av_len = u16::from_le_bytes([buf[offset + 2], buf[offset + 3]]) as usize;
+        offset += 4;
+
+        if av_id == 0 {
+            break;
+        }
+
+        if offset + av_len > buf.len() {
+            break;
+        }
+
+        let value_bytes = &buf[offset..offset + av_len];
+        offset += av_len;
+
+        let id = AvId::from(av_id);
+        let value = match id {
+            AvId::Timestamp if av_len == 8 => {
+                let ts = u64::from_le_bytes(value_bytes.try_into().unwrap());
+                AvValue::Timestamp(ts)
+            }
+            AvId::Flags if av_len == 4 => {
+                let flags = u32::from_le_bytes(value_bytes.try_into().unwrap());
+                AvValue::Flags(flags)
+            }
+            _ => {
+                // most string values are UTF-16LE, so make an educated guess
+                if av_len >= 2 && av_len % 2 == 0 {
+                    let s = utf16le_to_string(value_bytes);
+                    AvValue::Utf16(s)
+                } else {
+                    AvValue::Raw(value_bytes.to_vec())
+                }
+            }
+        };
+
+        out.push(AvPair { id, value });
+    }
+
+    out
+}
+
+fn utf16le_to_string(bytes: &[u8]) -> String {
+    if bytes.len() % 2 != 0 {
+        panic!("UTF-16LE data must have an even number of bytes");
+    }
+    // little endian means we can do basically the equivalent of reinterpret_cast in C++
+    let u16_slice: &[u16] = unsafe { slice::from_raw_parts(bytes.as_ptr() as *const u16, bytes.len() / 2) };
+
+    String::from_utf16_lossy(u16_slice)
+}
+
+// end: AV_PAIR stuff
 
 pub static PACKAGE_INFO: LazyLock<PackageInfo> = LazyLock::new(|| PackageInfo {
     capabilities: PackageCapabilities::empty(),

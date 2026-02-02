@@ -1,12 +1,10 @@
-use std::{io, slice};
+use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::ntlm::messages::computations::*;
 use crate::ntlm::messages::{read_ntlm_header, try_read_version, MessageFields, MessageTypes};
-use crate::ntlm::{
-    AvId, AvPair, AvValue, ChallengeMessage, NegotiateFlags, Ntlm, NtlmState, CHALLENGE_SIZE, GLOBAL_AV_PAIRS,
-};
+use crate::ntlm::{parse_av_pairs, ChallengeMessage, NegotiateFlags, Ntlm, NtlmState, CHALLENGE_SIZE, GLOBAL_AV_PAIRS};
 use crate::SecurityStatus;
 
 const HEADER_SIZE: usize = 48;
@@ -93,64 +91,4 @@ fn read_payload(
     message_fields.target_info.read_buffer_from(&mut buffer)?;
 
     Ok(())
-}
-
-// --- AV PAIR PARSING MONKEY PATCH ---
-
-fn parse_av_pairs(buf: &[u8]) -> Vec<AvPair> {
-    let mut out = Vec::new();
-    let mut offset = 0;
-
-    while offset + 4 <= buf.len() {
-        let av_id = u16::from_le_bytes([buf[offset], buf[offset + 1]]);
-        let av_len = u16::from_le_bytes([buf[offset + 2], buf[offset + 3]]) as usize;
-        offset += 4;
-
-        if av_id == 0 {
-            break; // AV_EOL
-        }
-
-        if offset + av_len > buf.len() {
-            break; // malformed, stop safely
-        }
-
-        let value_bytes = &buf[offset..offset + av_len];
-        offset += av_len;
-
-        let id = AvId::from(av_id);
-        let value = match id {
-            AvId::Timestamp if av_len == 8 => {
-                let ts = u64::from_le_bytes(value_bytes.try_into().unwrap());
-                AvValue::Timestamp(ts)
-            }
-            AvId::Flags if av_len == 4 => {
-                let flags = u32::from_le_bytes(value_bytes.try_into().unwrap());
-                AvValue::Flags(flags)
-            }
-            _ => {
-                // Most string values are UTF-16LE
-                if av_len >= 2 && av_len % 2 == 0 {
-                    let s = utf16le_to_string(value_bytes);
-                    AvValue::Utf16(s)
-                } else {
-                    AvValue::Raw(value_bytes.to_vec())
-                }
-            }
-        };
-
-        out.push(AvPair { id, value });
-    }
-
-    out
-}
-
-fn utf16le_to_string(bytes: &[u8]) -> String {
-    if bytes.len() % 2 != 0 {
-        panic!("UTF-16LE data must have an even number of bytes");
-    }
-
-    // Convert &[u8] to &[u16] (endianness consideration applies as above)
-    let u16_slice: &[u16] = unsafe { slice::from_raw_parts(bytes.as_ptr() as *const u16, bytes.len() / 2) };
-
-    String::from_utf16_lossy(u16_slice)
 }
