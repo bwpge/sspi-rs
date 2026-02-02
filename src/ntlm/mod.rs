@@ -56,10 +56,27 @@ pub enum AvId {
     DnsComputerName,
     DnsDomainName,
     DnsTreeName,
-    Timestamp,
     Flags,
+    Timestamp,
     TargetName,
     Unknown(u16),
+}
+
+impl AvId {
+    pub fn to_u16(&self) -> u16 {
+        match self {
+            AvId::Eol => 0x0,
+            AvId::NbComputerName => 0x1,
+            AvId::NbDomainName => 0x2,
+            AvId::DnsComputerName => 0x3,
+            AvId::DnsDomainName => 0x4,
+            AvId::DnsTreeName => 0x5,
+            AvId::Flags => 0x6,
+            AvId::Timestamp => 0x7,
+            AvId::TargetName => 0x9,
+            AvId::Unknown(u) => *u,
+        }
+    }
 }
 
 impl From<u16> for AvId {
@@ -84,16 +101,16 @@ impl From<u16> for AvId {
 impl fmt::Display for AvId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AvId::Eol => write!(f, "Eol"),
-            AvId::NbComputerName => write!(f, "NbComputerName"),
-            AvId::NbDomainName => write!(f, "NbDomainName"),
-            AvId::DnsComputerName => write!(f, "DnsComputerName"),
-            AvId::DnsDomainName => write!(f, "DnsDomainName"),
-            AvId::DnsTreeName => write!(f, "DnsTreeName"),
-            AvId::Timestamp => write!(f, "Timestamp"),
-            AvId::Flags => write!(f, "Flags"),
-            AvId::TargetName => write!(f, "TargetName"),
-            AvId::Unknown(b) => write!(f, "Unknown(0x{b:x})"),
+            AvId::Eol => f.pad("Eol"),
+            AvId::NbComputerName => f.pad("NbComputerName"),
+            AvId::NbDomainName => f.pad("NbDomainName"),
+            AvId::DnsComputerName => f.pad("DnsComputerName"),
+            AvId::DnsDomainName => f.pad("DnsDomainName"),
+            AvId::DnsTreeName => f.pad("DnsTreeName"),
+            AvId::Timestamp => f.pad("Timestamp"),
+            AvId::Flags => f.pad("Flags"),
+            AvId::TargetName => f.pad("TargetName"),
+            AvId::Unknown(b) => f.pad(&format!("Unknown(0x{b:x})")),
         }
     }
 }
